@@ -1,0 +1,166 @@
+# Ekarters Project — Issue Analysis
+
+I reviewed all source files in the project. Here's a breakdown of the issues found, organized by severity.
+
+---
+
+## 🔴 Critical / Bugs
+
+### 1. SSE Race Condition — `platformsDone` counter is not thread-safe
+**File:** [index.js](file:///c:/Users/Shikhar%20Mahajan/Documents/Project/Ekarters/server/index.js#L201-L208)
+
+The `platformsDone` variable is shared across concurrent `Promise` callbacks. Since `platformsDone++` is not atomic across async operations, the counter can become incorrect when multiple adapter promises resolve nearly simultaneously.
+
+```diff
+- let platformsDone = 0;
++ // Use an object for mutable shared state
++ const progress = { done: 0 };
+```
+And use `++progress.done` inside each callback. Alternatively, use a mutex or accumulate results sequentially.
+
+---
+
+### 2. SSE stream can write to a closed/ended response
+**File:** [index.js](file:///c:/Users/Shikhar%20Mahajan/Documents/Project/Ekarters/server/index.js#L183-L284)
+
+If the client disconnects mid-stream, `res.write()` will throw. There is no `req.on('close', ...)` handler to detect client disconnection and abort the scraping work.
+
+```diff
++ req.on('close', () => { aborted = true; });
+```
+
+---
+
+### 3. `AggregatorService` is dead code — never used
+**File:** [aggregatorService.js](file:///c:/Users/Shikhar%20Mahajan/Documents/Project/Ekarters/server/services/aggregatorService.js)
+
+This entire service is imported nowhere. The server uses `UniversalSearchService` instead. This is not a bug per se, but it's 170 lines of dead code with a parallel (possibly stale) implementation of product evaluation logic. It could mislead future developers.
+
+---
+
+### 4. Duplicate `priceAlerts` array — alerts stored in two places
+**Files:**
+- [index.js L25](file:///c:/Users/Shikhar%20Mahajan/Documents/Project/Ekarters/server/index.js#L25) — `const priceAlerts = [];`
+- [priceHistoryService.js L1](file:///c:/Users/Shikhar%20Mahajan/Documents/Project/Ekarters/server/services/priceHistoryService.js#L1) — `const priceAlerts = [];`
+
+The `/api/alerts` POST route in `index.js` pushes to its own local array, while `PriceHistoryService.createAlert()` pushes to a separate array. Alerts created via the API are invisible to the service, and vice versa.
+
+---
+
+## 🟠 Medium — Logic Issues
+
+### 5. `freeShippingOnly` filter crashes on `AggregatorService` path
+**File:** [facetService.js L70](file:///c:/Users/Shikhar%20Mahajan/Documents/Project/Ekarters/server/services/facetService.js#L70-L72)
+
+The filter checks `summary.lowestShipping?.isFree`, but products evaluated through `AggregatorService.evaluateProduct()` (dead code, but still) do **not** produce a `lowestShipping` property in the summary. Products built via `UniversalSearchService.evaluateCanonicalProduct()` do include it, so this only matters if someone re-activates the aggregator path.
+
+---
+
+### 6. SSE only triggers on empty brand/platform filters
+**File:** [App.jsx L69](file:///c:/Users/Shikhar%20Mahajan/Documents/Project/Ekarters/src/App.jsx#L69)
+
+```js
+if (searchTerm.trim() && !filters.brands.length && !filters.platforms.length) {
+  connectSSE(searchTerm, activePincode?.pincode);
+}
+```
+
+If the user types a search and also selects brand/platform filters, SSE live-scraping is **silently skipped** and it falls back to the regular `/api/search` endpoint. This isn't documented or communicated to the user — the "LIVE SCRAPING" progress bar never appears, which could be confusing.
+
+---
+
+### 7. PriceHistoryChart assumes `history.length > 1` for path calculation
+**File:** [PriceHistoryChart.jsx L28](file:///c:/Users/Shikhar%20Mahajan/Documents/Project/Ekarters/src/components/PriceHistoryChart.jsx#L28)
+
+```js
+const x = paddingX + (index / (history.length - 1)) * chartWidth;
+```
+
+If `history.length === 1`, this results in **division by zero** (`0/0 = NaN`), causing the SVG to render with `NaN` coordinates. The early return at line 8 only guards for `length === 0`.
+
+---
+
+### 8. Missing `helmet`, `compression`, `morgan` middleware usage
+**File:** [package.json](file:///c:/Users/Shikhar%20Mahajan/Documents/Project/Ekarters/package.json) vs [index.js](file:///c:/Users/Shikhar%20Mahajan/Documents/Project/Ekarters/server/index.js)
+
+`helmet`, `compression`, and `morgan` are listed as dependencies but **never imported or used** in `server/index.js`. These are security and performance middleware that should be applied — or removed from dependencies if intentionally unused.
+
+---
+
+### 9. `react-router-dom` installed but unused
+**File:** [package.json L25](file:///c:/Users/Shikhar%20Mahajan/Documents/Project/Ekarters/package.json#L25)
+
+`react-router-dom` v7 is a dependency, but there is **no routing** in the app — it's a single-page view with modals. This adds ~50KB to the client bundle for nothing.
+
+---
+
+## 🟡 Minor / Code Quality
+
+### 10. `express-rate-limit` installed but unused
+**File:** [package.json L18](file:///c:/Users/Shikhar%20Mahajan/Documents/Project/Ekarters/package.json#L18)
+
+Similar to #8 — `express-rate-limit` is a dependency but never applied. For a scraping-based API, rate limiting is important to prevent abuse.
+
+---
+
+### 11. `PriceHistoryService.generateHistory()` referenced but doesn't exist
+**File:** [index.js L118](file:///c:/Users/Shikhar%20Mahajan/Documents/Project/Ekarters/server/index.js#L118)
+
+```js
+priceHistory: product.priceHistory || PriceHistoryService.generateHistory(product.summary?.bestPrice?.price || 10000)
+```
+
+The `PriceHistoryService` class does **not** have a `generateHistory()` method. This will throw a `TypeError` at runtime if a product lacks `priceHistory`.
+
+---
+
+### 12. Silent `catch` blocks in scraper adapters
+**Files:** All adapter `parseSearchResults` methods in [adapters/index.js](file:///c:/Users/Shikhar%20Mahajan/Documents/Project/Ekarters/server/services/adapters/index.js)
+
+Every adapter has `catch (e) {}` blocks that silently swallow errors. While this prevents one bad product card from crashing the entire scrape, it makes debugging impossible.
+
+---
+
+### 13. Platform filter UX inconsistency in `FilterSidebar`
+**File:** [FilterSidebar.jsx L193](file:///c:/Users/Shikhar%20Mahajan/Documents/Project/Ekarters/src/components/FilterSidebar.jsx#L193)
+
+```js
+const isChecked = !(filters.platforms?.length > 0) || filters.platforms.includes(key);
+```
+
+All platform checkboxes appear checked when no platform filter is active, but toggling one off actually **adds** the remaining ones to the filter array (via `togglePlatform`). This is unintuitive — unchecking one platform actually selects all the other ones.
+
+---
+
+### 14. No cleanup of SSE `EventSource` on search term change  
+**File:** [App.jsx L63](file:///c:/Users/Shikhar%20Mahajan/Documents/Project/Ekarters/src/App.jsx#L60-L93)
+
+The effect *does* close the previous SSE connection (`sseRef.current.close()`), but a new search can fire before the previous SSE's `onmessage` callbacks have all been processed. The old callbacks will call `setProducts` / `setFacets` with stale data that momentarily overrides the new search.
+
+---
+
+## Summary Table
+
+| # | Severity | Issue | File |
+|---|----------|-------|------|
+| 1 | 🔴 Critical | Race condition in `platformsDone` counter | `server/index.js` |
+| 2 | 🔴 Critical | SSE writes to closed response on client disconnect | `server/index.js` |
+| 3 | 🟠 Medium | `AggregatorService` is 170 lines of dead code | `aggregatorService.js` |
+| 4 | 🟠 Medium | Duplicate `priceAlerts` arrays | `index.js` + `priceHistoryService.js` |
+| 5 | 🟠 Medium | `freeShippingOnly` filter won't work on aggregator path | `facetService.js` |
+| 6 | 🟠 Medium | SSE silently skipped when filters are active | `App.jsx` |
+| 7 | 🟠 Medium | Division by zero when price history has 1 entry | `PriceHistoryChart.jsx` |
+| 8 | 🟠 Medium | `helmet`/`compression`/`morgan` imported but not used | `server/index.js` |
+| 9 | 🟡 Minor | `react-router-dom` unused dependency | `package.json` |
+| 10 | 🟡 Minor | `express-rate-limit` unused dependency | `package.json` |
+| 11 | 🔴 Critical | `PriceHistoryService.generateHistory()` doesn't exist — will crash | `server/index.js` |
+| 12 | 🟡 Minor | Silent catch blocks hide scraper errors | `adapters/index.js` |
+| 13 | 🟡 Minor | Platform filter checkbox UX is unintuitive | `FilterSidebar.jsx` |
+| 14 | 🟡 Minor | Stale SSE callback race on rapid search changes | `App.jsx` |
+
+---
+
+> [!IMPORTANT]
+> Issues **#1**, **#2**, and **#11** are **runtime crashers** that will cause errors in production. Issue #11 (`generateHistory` not existing) will throw a `TypeError` every time a user views a product without pre-existing price history.
+
+Would you like me to fix any or all of these?
