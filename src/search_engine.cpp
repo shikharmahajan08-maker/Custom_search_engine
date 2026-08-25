@@ -19,8 +19,8 @@
 
 
 namespace SnippetColor {
-    const std::string BOLD_YELLOW = "\033[1;33m";
-    const std::string RESET       = "\033[0m";
+    const std::string BOLD_YELLOW = "<b>";
+    const std::string RESET       = "</b>";
 }
 
 

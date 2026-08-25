@@ -107,6 +107,8 @@ static std::vector<std::string> listTxtFiles(const std::string& dirPath) {
 
         
         if (filename == "." || filename == "..") continue;
+        
+        std::cerr << "Found file in dir: " << filename << "\n";
 
         
         std::string fullPath = dirPath + "/" + filename;
