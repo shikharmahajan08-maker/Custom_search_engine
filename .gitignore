@@ -1,0 +1,23 @@
+# Build files
+search_engine.exe
+search_engine
+*.o
+*.obj
+build/
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+
+# Python cache
+__pycache__/
+*.pyc
+
+# IDE files
+.vscode/
+.vs/
+*.suo
+*.user
+
+# Artifacts & Log files
+analysis_results_*
